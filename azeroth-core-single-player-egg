@@ -1,0 +1,605 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PANEL",
+    "meta": {
+        "version": "PLCN_v3",
+        "update_url": null
+    },
+    "exported_at": "2026-05-23T16:14:26+00:00",
+    "name": "AzerothCore Single Player (ASP)",
+    "author": "greyframe0901@gmail.com",
+    "uuid": "eb4ba7c1-5370-442e-862a-199eeeb476ea",
+    "description": "AzerothCore Single Player WoW Wrath of the Litch king Private Server, with Player Bots",
+    "icon": null,
+    "tags": [],
+    "features": [
+        "eula"
+    ],
+    "docker_images": {
+        "ASP (Wine + MariaDB)": "ghcr.io/frameender/asp-pelican:latest"
+    },
+    "file_denylist": [],
+    "startup_commands": {
+        "Default": "/usr/local/bin/asp-entrypoint.sh"
+    },
+    "config": {
+        "files": "{\n    \"Server\\/configs\\/authserver.conf\": {\n        \"parser\": \"file\",\n        \"find\": {\n            \"LoginDatabaseInfo\": \"\\\"127.0.0.1;{{server.environment.ASP_DB_PORT}};{{server.environment.ASP_DB_USER}};{{server.environment.ASP_DB_PASS}};{{server.environment.ASP_DB_AUTH_NAME}}\\\"\",\n            \"RealmServerPort\": \"{{server.environment.ASP_AUTH_PORT}}\",\n            \"BindIP\": \"\\\"0.0.0.0\\\"\",\n            \"WrongPass.MaxCount\": \"{{server.environment.ASP_WRONGPASS_MAXCOUNT}}\",\n            \"WrongPass.BanTime\": \"{{server.environment.ASP_WRONGPASS_BANTIME}}\",\n            \"Updates.EnableDatabases\": \"{{server.environment.ASP_AUTH_UPDATES_ENABLE}}\",\n            \"Updates.AutoSetup\": \"{{server.environment.ASP_UPDATES_AUTOSETUP}}\"\n        }\n    },\n    \"Server\\/configs\\/worldserver.conf\": {\n        \"parser\": \"file\",\n        \"find\": {\n            \"LoginDatabaseInfo\": \"\\\"127.0.0.1;{{server.environment.ASP_DB_PORT}};{{server.environment.ASP_DB_USER}};{{server.environment.ASP_DB_PASS}};{{server.environment.ASP_DB_AUTH_NAME}}\\\"\",\n            \"WorldDatabaseInfo\": \"\\\"127.0.0.1;{{server.environment.ASP_DB_PORT}};{{server.environment.ASP_DB_USER}};{{server.environment.ASP_DB_PASS}};{{server.environment.ASP_DB_WORLD_NAME}}\\\"\",\n            \"CharacterDatabaseInfo\": \"\\\"127.0.0.1;{{server.environment.ASP_DB_PORT}};{{server.environment.ASP_DB_USER}};{{server.environment.ASP_DB_PASS}};{{server.environment.ASP_DB_CHARS_NAME}}\\\"\",\n            \"WorldServerPort\": \"{{server.environment.ASP_WORLD_PORT}}\",\n            \"RealmID\": \"{{server.environment.ASP_REALM_ID}}\",\n            \"Updates.EnableDatabases\": \"{{server.environment.ASP_WORLD_UPDATES_ENABLE}}\",\n            \"Updates.AutoSetup\": \"{{server.environment.ASP_UPDATES_AUTOSETUP}}\",\n            \"GameType\": \"{{server.environment.ASP_GAME_TYPE}}\",\n            \"RealmZone\": \"{{server.environment.ASP_REALM_ZONE}}\",\n            \"PlayerLimit\": \"{{server.environment.ASP_PLAYER_LIMIT}}\",\n            \"StartPlayerLevel\": \"{{server.environment.ASP_START_LEVEL}}\",\n            \"StartPlayerMoney\": \"{{server.environment.ASP_START_MONEY}}\",\n            \"MaxPlayerLevel\": \"{{server.environment.ASP_MAX_LEVEL}}\",\n            \"Rate.XP.Kill\": \"{{server.environment.ASP_RATE_XP_KILL}}\",\n            \"Rate.XP.Quest\": \"{{server.environment.ASP_RATE_XP_QUEST}}\",\n            \"Rate.XP.Explore\": \"{{server.environment.ASP_RATE_XP_EXPLORE}}\",\n            \"SOAP.Enabled\": \"{{server.environment.ASP_SOAP_ENABLED}}\",\n            \"SOAP.Port\": \"{{server.environment.ASP_SOAP_PORT}}\",\n            \"Console.Enable\": \"1\"\n        }\n    },\n    \"Server\\/configs\\/modules\\/playerbots.conf\": {\n        \"parser\": \"file\",\n        \"find\": {\n            \"PlayerbotsDatabaseInfo\": \"\\\"127.0.0.1;{{server.environment.ASP_DB_PORT}};{{server.environment.ASP_DB_USER}};{{server.environment.ASP_DB_PASS}};{{server.environment.ASP_DB_PLAYERBOTS_NAME}}\\\"\",\n            \"AiPlayerbot.Enabled\": \"{{server.environment.ASP_BOTS_ENABLED}}\",\n            \"AiPlayerbot.MinRandomBots\": \"{{server.environment.ASP_BOTS_MIN}}\",\n            \"AiPlayerbot.MaxRandomBots\": \"{{server.environment.ASP_BOTS_MAX}}\",\n            \"AiPlayerbot.RandomBotAutologin\": \"{{server.environment.ASP_BOTS_AUTOLOGIN}}\"\n        }\n    }\n}",
+        "startup": "{\n    \"done\": \"ASP STACK READY\",\n    \"userInteraction\": []\n}",
+        "logs": "{\n    \"custom\": false,\n    \"location\": \".asp\\/world.log\"\n}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# ============================================================================\n# ASP (AzerothCore Single Player) \u2014 Pelican install script.\n#\n# Runs in the install container (debian + curl/jq/p7zip) BEFORE the server\n# ever starts. Pelican mounts the persistent server directory at /mnt/server\n# during install (it becomes /home/container at runtime).\n#\n# Behaviour:\n#   * Fresh install (no Server/worldserver.exe present, or ASP_FORCE_FULL=1)\n#       \u2192 download every  ASP_<ver>_full.7z.NNN  asset\n#   * Existing install   \u2192 download every  ASP_<ver>_update_only.7z.NNN  asset\n#   * Reassemble + extract the multi-part 7z, then locate the inner\n#     \"Server\" folder and stage it at  /mnt/server/Server\n#   * Record the installed version in  /mnt/server/.asp/installed_version\n#\n# Release source: https://github.com/kadeshar/ASP/releases/latest\n# Override with ASP_RELEASE_REPO / ASP_RELEASE_TAG if you mirror it.\n# ============================================================================\n\nset -euo pipefail\n\n# --- Ensure required tools exist in the install container ------------------\n# The stock Pelican installers:debian image does NOT ship jq/7z. Install\n# them before anything else uses them. Idempotent: only runs apt if a tool\n# is actually missing, so re-installs stay fast.\nif ! command -v jq   >/dev/null 2>&1 \\\n   || ! command -v curl >/dev/null 2>&1 \\\n   || ! command -v 7z   >/dev/null 2>&1; then\n    echo \"==> Bootstrapping install dependencies (jq, curl, p7zip)\"\n    apt-get update\n    apt-get install -y --no-install-recommends \\\n        curl ca-certificates jq p7zip-full\nfi\n\nREPO=\"${ASP_RELEASE_REPO:-kadeshar/ASP}\"\nTAG=\"${ASP_RELEASE_TAG:-latest}\"\nTARGET=\"/mnt/server\"\nSTATE_DIR=\"${TARGET}/.asp\"\nVERSION_FILE=\"${STATE_DIR}/installed_version\"\n# Download/extract scratch space. MUST live on the mounted server volume\n# (/mnt/server) \u2014 the install container's /tmp is a small tmpfs and a ~2GB\n# part overflows it with \"curl: (23) Failure writing output to destination\".\n# Cleaned up at the end of this script.\nWORK=\"${TARGET}/.asp-dl\"\n\nmkdir -p \"$TARGET\" \"$STATE_DIR\" \"$WORK\"\n\necho \"==> ASP installer starting\"\necho \"    repo  : ${REPO}\"\necho \"    tag   : ${TAG}\"\necho \"    target: ${TARGET}\"\n\n# --- Resolve the release JSON ----------------------------------------------\nif [ \"$TAG\" = \"latest\" ]; then\n    API=\"https://api.github.com/repos/${REPO}/releases/latest\"\nelse\n    API=\"https://api.github.com/repos/${REPO}/releases/tags/${TAG}\"\nfi\n\nAUTH_HEADER=()\n[ -n \"${ASP_GITHUB_TOKEN:-}\" ] && AUTH_HEADER=(-H \"Authorization: Bearer ${ASP_GITHUB_TOKEN}\")\n\nREL_JSON=\"$(curl -fsSL \"${AUTH_HEADER[@]}\" \\\n    -H \"Accept: application/vnd.github+json\" \"$API\")\" \\\n    || { echo \"!! Could not query GitHub release API\"; exit 1; }\n\nREL_TAG=\"$(echo \"$REL_JSON\" | jq -r '.tag_name')\"\necho \"==> Resolved release: ${REL_TAG}\"\n\n# --- Decide full vs update_only --------------------------------------------\nMODE=\"full\"\nif [ -f \"${TARGET}/Server/worldserver.exe\" ] && [ \"${ASP_FORCE_FULL:-0}\" != \"1\" ]; then\n    MODE=\"update_only\"\nfi\nPREV_VER=\"\"\n[ -f \"$VERSION_FILE\" ] && PREV_VER=\"$(cat \"$VERSION_FILE\" 2>/dev/null || true)\"\n\nif [ \"$MODE\" = \"update_only\" ] && [ \"$PREV_VER\" = \"$REL_TAG\" ]; then\n    echo \"==> Already at ${REL_TAG} and a Server install exists. Nothing to do.\"\n    echo \"    (Set ASP_FORCE_FULL=1 to force a clean full reinstall.)\"\n    exit 0\nfi\necho \"==> Install mode: ${MODE}  (previous: ${PREV_VER:-none})\"\n\n# --- Select the matching multi-part assets ---------------------------------\n# Names look like: ASP_1.3.1_full.7z.001 / ASP_1.3.1_update_only.7z.002\nmapfile -t ASSETS < <(echo \"$REL_JSON\" | jq -r \\\n    --arg mode \"$MODE\" \\\n    '.assets[] | select(.name | test(\"_\" + $mode + \"\\\\.7z\\\\.[0-9]+$\"))\n     | \"\\(.name)\\t\\(.browser_download_url)\"' | sort)\n\nif [ \"${#ASSETS[@]}\" -eq 0 ]; then\n    echo \"!! No '${MODE}' .7z part assets found on release ${REL_TAG}.\"\n    if [ \"$MODE\" = \"update_only\" ]; then\n        echo \"   Falling back to a full install.\"\n        MODE=\"full\"\n        mapfile -t ASSETS < <(echo \"$REL_JSON\" | jq -r \\\n            '.assets[] | select(.name | test(\"_full\\\\.7z\\\\.[0-9]+$\"))\n             | \"\\(.name)\\t\\(.browser_download_url)\"' | sort)\n    fi\nfi\n[ \"${#ASSETS[@]}\" -eq 0 ] && { echo \"!! Still no parts found. Aborting.\"; exit 1; }\n\necho \"==> ${#ASSETS[@]} part(s) to download:\"\nfor a in \"${ASSETS[@]}\"; do echo \"    - ${a%%$'\\t'*}\"; done\n\n# --- Download every part ---------------------------------------------------\ncd \"$WORK\"\nrm -f ./*.7z.* 2>/dev/null || true\nfor a in \"${ASSETS[@]}\"; do\n    name=\"${a%%$'\\t'*}\"\n    url=\"${a##*$'\\t'}\"\n    echo \"==> Downloading ${name}\"\n    curl -fL --retry 5 --retry-delay 5 -C - \"${AUTH_HEADER[@]}\" \\\n        -o \"${WORK}/${name}\" \"$url\" \\\n        || { echo \"!! Download failed: ${name}\"; exit 1; }\ndone\n\n# --- Reassemble + extract ---------------------------------------------------\nFIRST_PART=\"$(ls \"${WORK}\"/*.7z.001 2>/dev/null | head -1 || true)\"\n[ -z \"$FIRST_PART\" ] && { echo \"!! No .7z.001 part present after download.\"; exit 1; }\n\nEXTRACT_DIR=\"${WORK}/extracted\"\nrm -rf \"$EXTRACT_DIR\"; mkdir -p \"$EXTRACT_DIR\"\n\necho \"==> Extracting $(basename \"$FIRST_PART\") (7z auto-joins .001/.002/...)\"\nif command -v 7z >/dev/null 2>&1;  then SEVENZIP=7z;\nelif command -v 7za >/dev/null 2>&1; then SEVENZIP=7za;\nelif command -v 7zr >/dev/null 2>&1; then SEVENZIP=7zr;\nelse echo \"!! No 7z binary in install container.\"; exit 1; fi\n\n# Large LZMA2 archives can exceed the install container's memory limit and\n# get OOM-killed (\"Killed\" / exit 137). Extract single-threaded (-mmt=1)\n# and, if still killed, retry once more conservatively. If both fail it is\n# almost certainly the server's Memory limit being too low \u2014 say so plainly.\nextract_archive() {\n    \"$SEVENZIP\" x -y -mmt=1 -o\"$EXTRACT_DIR\" \"$FIRST_PART\" >/dev/null 2>&1\n}\nextract_archive\nRC=$?\nif [ \"$RC\" -ne 0 ]; then\n    echo \"   First extraction attempt failed (rc=${RC}); retrying once...\"\n    rm -rf \"$EXTRACT_DIR\"; mkdir -p \"$EXTRACT_DIR\"\n    extract_archive\n    RC=$?\nfi\nif [ \"$RC\" -ne 0 ]; then\n    echo \"!! 7z extraction failed (rc=${RC}).\"\n    if [ \"$RC\" -eq 137 ] || [ \"$RC\" -eq 143 ]; then\n        echo \"!! Exit ${RC} = the process was KILLED, almost always the\"\n        echo \"!! server's Memory limit being too low for decompression.\"\n        echo \"!! Raise this server's Memory limit (8192MB+ recommended)\"\n        echo \"!! in the panel, then Reinstall.\"\n    fi\n    exit 1\nfi\n\n# Parts are now extracted \u2014 free the multi-GB .7z parts before the copy\n# step so peak disk stays ~1 archive-size instead of 3x.\necho \"==> Extraction OK, removing downloaded archive parts to save space\"\nrm -f \"${WORK}\"/*.7z.* 2>/dev/null || true\n\n# --- Locate the inner Server folder ----------------------------------------\n# The archive may extract as ./Server, ./ASP/Server, ./ASP_x.y.z/Server, etc.\necho \"==> Locating the Server folder (contains worldserver.exe)\"\nSERVER_SRC=\"$(find \"$EXTRACT_DIR\" -maxdepth 6 -type f -name worldserver.exe \\\n              -printf '%h\\n' 2>/dev/null | head -1)\"\nif [ -z \"$SERVER_SRC\" ]; then\n    # update_only archives may ship loose files without the .exe \u2014 fall back\n    # to a directory literally named \"Server\".\n    SERVER_SRC=\"$(find \"$EXTRACT_DIR\" -maxdepth 6 -type d -name Server 2>/dev/null | head -1)\"\nfi\n[ -z \"$SERVER_SRC\" ] && { echo \"!! Could not find a Server folder in the archive.\"; exit 1; }\necho \"    Found: ${SERVER_SRC}\"\n\n# --- Stage into the persistent volume --------------------------------------\nmkdir -p \"${TARGET}/Server\"\nif [ \"$MODE\" = \"full\" ]; then\n    echo \"==> Full install: syncing Server/ into ${TARGET}/Server\"\n    # Preserve player data + saves + DB across a forced full reinstall.\n    cp -a \"${SERVER_SRC}/.\" \"${TARGET}/Server/\" 2>/dev/null \\\n        || { echo \"!! Copy of Server/ failed.\"; exit 1; }\nelse\n    echo \"==> Update: overlaying changed files onto existing Server/\"\n    cp -a \"${SERVER_SRC}/.\" \"${TARGET}/Server/\" 2>/dev/null \\\n        || { echo \"!! Overlay copy failed.\"; exit 1; }\n    # Some update archives also ship a top-level Updates/ or SQL/ \u2014 copy any\n    # sibling folders alongside Server so manual SQL stays reachable.\n    PARENT=\"$(dirname \"$SERVER_SRC\")\"\n    for extra in Updates SQL Installations; do\n        [ -d \"${PARENT}/${extra}\" ] && cp -a \"${PARENT}/${extra}\" \"${TARGET}/\" 2>/dev/null || true\n    done\nfi\n\n# --- Make the config tree exist where the orchestrator expects it ----------\nmkdir -p \"${TARGET}/Server/configs/modules\" \"${TARGET}/Saves\" \"${STATE_DIR}\"\n\n# Stamp the version + stage the orchestrator/helper.\necho \"$REL_TAG\" > \"$VERSION_FILE\"\necho \"==> Installed version recorded: ${REL_TAG}\"\n\n# Pull the runtime helper scripts shipped with the egg (baked into the\n# runtime image at /usr/local/bin won't exist in the install container, so\n# the egg's runtime image provides them; here we just ensure the dirs).\nchmod -R u+rwX \"${TARGET}/Server\" 2>/dev/null || true\n\n# Cleanup scratch space so it doesn't bloat the install layer.\nrm -rf \"$WORK\"\n\necho \"==> ASP install/update complete (${MODE}, ${REL_TAG}).\"\necho \"    Server staged at ${TARGET}/Server\"",
+            "container": "ghcr.io/pterodactyl/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Auth DB Name",
+            "description": "Auth database name.",
+            "env_variable": "ASP_DB_AUTH_NAME",
+            "default_value": "acore_auth",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,64"
+            ],
+            "sort": 8
+        },
+        {
+            "name": "Auth Port",
+            "description": "authserver listen port (also realm login).",
+            "env_variable": "ASP_AUTH_PORT",
+            "default_value": "3724",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,65535"
+            ],
+            "sort": 15
+        },
+        {
+            "name": "Auth Updates.EnableDatabases",
+            "description": "authserver Updates.EnableDatabases bitmask (1 = auth DB).",
+            "env_variable": "ASP_AUTH_UPDATES_ENABLE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,7"
+            ],
+            "sort": 31
+        },
+        {
+            "name": "Auto-Backup Keep",
+            "description": "How many automatic shutdown backups to retain (0 disables).",
+            "env_variable": "ASP_AUTO_BACKUP_KEEP",
+            "default_value": "5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,100"
+            ],
+            "sort": 14
+        },
+        {
+            "name": "Characters DB Name",
+            "description": "Characters database name.",
+            "env_variable": "ASP_DB_CHARS_NAME",
+            "default_value": "acore_characters",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,64"
+            ],
+            "sort": 10
+        },
+        {
+            "name": "DB InnoDB Buffer Pool",
+            "description": "InnoDB buffer pool size, e.g. 512M, 1G.",
+            "env_variable": "ASP_DB_BUFFER_POOL",
+            "default_value": "512M",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "regex:/^[0-9]+[KMG]$/"
+            ],
+            "sort": 13
+        },
+        {
+            "name": "DB Password",
+            "description": "Password for the runtime MySQL user.",
+            "env_variable": "ASP_DB_PASS",
+            "default_value": "acore",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,64"
+            ],
+            "sort": 6
+        },
+        {
+            "name": "DB Port",
+            "description": "Internal MySQL port (loopback only, not published).",
+            "env_variable": "ASP_DB_PORT",
+            "default_value": "3306",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,65535"
+            ],
+            "sort": 12
+        },
+        {
+            "name": "DB Root Password",
+            "description": "Embedded MySQL root password (internal only).",
+            "env_variable": "ASP_DB_ROOT_PASS",
+            "default_value": "acore-root",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,64"
+            ],
+            "sort": 7
+        },
+        {
+            "name": "DB User",
+            "description": "Runtime MySQL user AzerothCore connects as.",
+            "env_variable": "ASP_DB_USER",
+            "default_value": "acore",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,32"
+            ],
+            "sort": 5
+        },
+        {
+            "name": "Force Full Reinstall",
+            "description": "1 = always download the *full* archive on reinstall (wipes Server/, keeps DB + Saves). 0 = use update_only when a Server install exists.",
+            "env_variable": "ASP_FORCE_FULL",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 3
+        },
+        {
+            "name": "Game Type",
+            "description": "GameType: 0=Normal, 1=PvP, 4=Normal, 6=RP, 8=RP-PvP, 16=Open-PvP.",
+            "env_variable": "ASP_GAME_TYPE",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,16"
+            ],
+            "sort": 23
+        },
+        {
+            "name": "GitHub Token (optional)",
+            "description": "Optional PAT to avoid GitHub anonymous rate limits on large pulls.",
+            "env_variable": "ASP_GITHUB_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "string",
+                "nullable"
+            ],
+            "sort": 4
+        },
+        {
+            "name": "Max Player Level",
+            "description": "Level cap.",
+            "env_variable": "ASP_MAX_LEVEL",
+            "default_value": "80",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,80"
+            ],
+            "sort": 26
+        },
+        {
+            "name": "Player Limit",
+            "description": "Max simultaneous players (0 = unlimited).",
+            "env_variable": "ASP_PLAYER_LIMIT",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,100000"
+            ],
+            "sort": 24
+        },
+        {
+            "name": "Playerbots Autologin",
+            "description": "Auto-login random bots at startup (0/1).",
+            "env_variable": "ASP_BOTS_AUTOLOGIN",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 39
+        },
+        {
+            "name": "Playerbots DB Name",
+            "description": "Playerbots module database name.",
+            "env_variable": "ASP_DB_PLAYERBOTS_NAME",
+            "default_value": "acore_playerbots",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,64"
+            ],
+            "sort": 11
+        },
+        {
+            "name": "Playerbots Enabled",
+            "description": "Enable the playerbots module (0/1).",
+            "env_variable": "ASP_BOTS_ENABLED",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 36
+        },
+        {
+            "name": "Playerbots Max",
+            "description": "Maximum random bots.",
+            "env_variable": "ASP_BOTS_MAX",
+            "default_value": "500",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,5000"
+            ],
+            "sort": 38
+        },
+        {
+            "name": "Playerbots Min",
+            "description": "Minimum random bots.",
+            "env_variable": "ASP_BOTS_MIN",
+            "default_value": "500",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,5000"
+            ],
+            "sort": 37
+        },
+        {
+            "name": "Realm Address",
+            "description": "realmlist address clients connect to after auth (blank = leave as-is). Set this to your node's public IP/host for remote play.",
+            "env_variable": "ASP_REALM_ADDRESS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "string",
+                "nullable",
+                "max:64"
+            ],
+            "sort": 21
+        },
+        {
+            "name": "Realm ID",
+            "description": "Realm ID this worldserver runs as.",
+            "env_variable": "ASP_REALM_ID",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,255"
+            ],
+            "sort": 19
+        },
+        {
+            "name": "Realm Name",
+            "description": "Realm display name. Applied to the DB on every boot (blank = leave as-is).",
+            "env_variable": "ASP_REALM_NAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "string",
+                "nullable",
+                "max:32"
+            ],
+            "sort": 20
+        },
+        {
+            "name": "Realm Zone",
+            "description": "RealmZone (1=Development, 2=US, 3=Oceanic, ... affects name rules).",
+            "env_variable": "ASP_REALM_ZONE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,30"
+            ],
+            "sort": 22
+        },
+        {
+            "name": "Release Repo",
+            "description": "GitHub owner/repo to pull ASP release archives from.",
+            "env_variable": "ASP_RELEASE_REPO",
+            "default_value": "kadeshar/ASP",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:3,80"
+            ],
+            "sort": 1
+        },
+        {
+            "name": "Release Tag",
+            "description": "Release tag to install. 'latest' tracks the newest release.",
+            "env_variable": "ASP_RELEASE_TAG",
+            "default_value": "latest",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,32"
+            ],
+            "sort": 2
+        },
+        {
+            "name": "SOAP Enabled",
+            "description": "Enable the SOAP remote-admin API (0/1).",
+            "env_variable": "ASP_SOAP_ENABLED",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 18
+        },
+        {
+            "name": "SOAP Port",
+            "description": "SOAP remote-admin port.",
+            "env_variable": "ASP_SOAP_PORT",
+            "default_value": "7878",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,65535"
+            ],
+            "sort": 17
+        },
+        {
+            "name": "Start Auth Server",
+            "description": "Run authserver.exe (0 to skip, e.g. DB-only).",
+            "env_variable": "ASP_START_AUTH",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 40
+        },
+        {
+            "name": "Start Player Level",
+            "description": "Level new characters start at.",
+            "env_variable": "ASP_START_LEVEL",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,80"
+            ],
+            "sort": 25
+        },
+        {
+            "name": "Start Player Money",
+            "description": "Starting copper for new characters.",
+            "env_variable": "ASP_START_MONEY",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,2000000000"
+            ],
+            "sort": 27
+        },
+        {
+            "name": "Start World Server",
+            "description": "Run worldserver.exe (0 to skip).",
+            "env_variable": "ASP_START_WORLD",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 41
+        },
+        {
+            "name": "Updates.AutoSetup",
+            "description": "Auto-create + import schema on first start (1 recommended).",
+            "env_variable": "ASP_UPDATES_AUTOSETUP",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "in:0,1"
+            ],
+            "sort": 33
+        },
+        {
+            "name": "World DB Name",
+            "description": "World database name.",
+            "env_variable": "ASP_DB_WORLD_NAME",
+            "default_value": "acore_world",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "between:1,64"
+            ],
+            "sort": 9
+        },
+        {
+            "name": "World Port",
+            "description": "worldserver realm port.",
+            "env_variable": "ASP_WORLD_PORT",
+            "default_value": "8085",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,65535"
+            ],
+            "sort": 16
+        },
+        {
+            "name": "World Updates.EnableDatabases",
+            "description": "worldserver Updates.EnableDatabases bitmask (7 = all DBs auto-import).",
+            "env_variable": "ASP_WORLD_UPDATES_ENABLE",
+            "default_value": "7",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,7"
+            ],
+            "sort": 32
+        },
+        {
+            "name": "WrongPass BanTime",
+            "description": "Ban seconds after too many wrong passwords.",
+            "env_variable": "ASP_WRONGPASS_BANTIME",
+            "default_value": "600",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,86400"
+            ],
+            "sort": 35
+        },
+        {
+            "name": "WrongPass MaxCount",
+            "description": "Failed logins before action (0 = disabled).",
+            "env_variable": "ASP_WRONGPASS_MAXCOUNT",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,1000"
+            ],
+            "sort": 34
+        },
+        {
+            "name": "XP Rate: Explore",
+            "description": "Exploration XP multiplier.",
+            "env_variable": "ASP_RATE_XP_EXPLORE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:0,1000"
+            ],
+            "sort": 30
+        },
+        {
+            "name": "XP Rate: Kill",
+            "description": "Kill XP multiplier.",
+            "env_variable": "ASP_RATE_XP_KILL",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:0,1000"
+            ],
+            "sort": 28
+        },
+        {
+            "name": "XP Rate: Quest",
+            "description": "Quest XP multiplier.",
+            "env_variable": "ASP_RATE_XP_QUEST",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:0,1000"
+            ],
+            "sort": 29
+        }
+    ]
+}
